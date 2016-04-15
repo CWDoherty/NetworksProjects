@@ -1,11 +1,3 @@
-Project 4 README
-Chris Doherty & Matt Garvin
+Project 4 
 
-
-Approach:
-  First we log into FakeBook using the credentials and supplied CSRF token. After the completion of that request we were able to use the sessionid to send requests to the server iteratively. We kept track of all links crawled inside of a list and all visited links in a set. We chose which link to crawl by finding any link in the list that was not contained in a set.
-
-
-Challenges:
-  Our first challenge was handling cookies and figuring out how to log in.
-  Our second challenege was that we initially crawled recursively and ran out of memory.
+A simple webcrawler that crawls 'Fakebook' located at fring.ccs.neu.edu. Logs in using supplied credentials and searched iteratively for 'secret flags' hidden in <h2> tags. The script handles 200, 303, 304, 404 and 500 response codes and will automatically reconnect to the server in the event an error occurs or the connection is terminated.
