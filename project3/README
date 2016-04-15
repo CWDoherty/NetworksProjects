@@ -1,5 +1,5 @@
 README
 Project 3
-Chris Doherty & Matt Garvin
 
-We decided to design our protocol around Negative Acknowledgements or NACKs. We always send a packet with the size 12000 since that is the max allowable packet size allowed by ethernet. If a packet is nacked, we reset the sequence number and send again starting from there. While this results in some duplication, performance is still relatively good. Once the receiver receives an EOF that is in sync with its sequence # it initiates a teardown with the sender and both parties disconnect.
+
+3700recv and 3700send work together to implement a transger layer protocol. Our protocol uses Negative Acknowledgements to ensure that all data is received in order by the receiver.
