@@ -1,0 +1,227 @@
+#!/usr/bin/python
+
+import socket
+import time
+from urlparse import urlparse
+import re
+import sys
+from bs4 import BeautifulSoup
+
+CRLF = "\r\n\r\n"
+root = 'fring.ccs.neu.edu/'
+
+
+def get_response_code(response):
+    if '200' in response:
+        return 'OK'
+    elif '301' in response:
+        return 'Moved'
+    elif '302' in response:
+        return 'Found'
+    elif '403' in response:
+        return 'Forbidden'
+    elif '404' in response:
+        return 'Not Found'
+    elif '500' in response:
+        return 'Server Error'
+    else:
+        return 'Unknown'
+
+# Sends an HTTP 1.1 GET request to the server to get the login page.
+def get_login_page(sock):
+    request = 'GET /accounts/login/ HTTP/1.1\r\nHost: fring.ccs.neu.edu\r\nConnection:keep-alive'
+    request += CRLF
+
+    sock.sendall(request)
+    time.sleep(.1)
+    response = sock.recv(65000)
+    cookies = get_cookies(response)
+
+    if get_response_code(response) == 'OK':
+        return (get_html(response), cookies)
+    else:
+        return None
+        #try again
+
+# Gets the cookies given by the server from the HTTP request
+def get_cookies(html):
+    blocks = html.split("\n\n")
+    lines = blocks[0]
+
+    cookies = []
+    lines = lines.split("\n")
+    for l in lines:
+        if 'Set-Cookie' in l:
+            cookies.append(l)
+    return cookies
+
+
+# Strip HTML from the HTTP 1.1 response.
+def get_html(response):
+    blocks = response.split("\r\n\r\n")
+    html = "".join(blocks[1:])
+    return html
+
+# Parse out the CSRF and SessionID from the HTTP 1.1 response
+def parse_cookies(cookies, hasCSRF):
+    real_cookies = []
+    if hasCSRF:
+
+        for i in range(len(cookies)):
+            a = cookies[i].split(" ")
+            real_cookies.append(a)
+
+        csrf = real_cookies[0][1]
+        session = real_cookies[1][1]
+
+        csrf = csrf[10:len(csrf) - 1]
+        session = session[10:len(session) - 1]
+
+        return csrf, session
+
+    for i in range(len(cookies)):
+        a = cookies[i].split(" ")
+        real_cookies.append(a)
+
+    session = real_cookies[0][1]
+    session = session[10:len(session) - 1]
+
+    return session
+
+# Send a HTTP 1.1 POST request to the server to log in with the supplied credentials.
+def post_login(csrf, session, username, password):
+    login_response = "username=" + str(username) + "&password=" + str(password) + "&csrfmiddlewaretoken=" + csrf
+
+    post = "POST /accounts/login/?next=/fakebook/ HTTP/1.1\r\n"
+    post += "Host: fring.ccs.neu.edu\r\n"
+    post += "Content-Length: " + str(len(login_response)) + "\r\n"
+    post += "Connection: keep-alive\r\n"
+    post += "Cookie: sessionid=" + str(session) + "; csrftoken=" + str(csrf) + "\r\n\n" # This is what we were missing.
+    post += login_response + CRLF
+
+    sock.sendall(post)
+
+    time.sleep(.1)
+    return sock.recv(65000)
+
+
+def get_location(html):
+    blocks = html.split("\n\n")
+    lines = blocks[0]
+    headers = lines.split("\n")
+
+    for h in headers:
+        if 'Location' in h:
+            return h
+
+def collect_links(response):
+    soup = BeautifulSoup(response, 'html.parser')
+    links = soup.find_all('a')
+
+    i = re.findall(r'"(/.*?)"', str(links))
+    return i
+
+def check_flags(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    flags = soup.find_all('h2')
+
+    sf = flags[0]
+    flag = str(sf)[48:112]
+    return flag
+
+
+def reset_connection():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect(('fring.ccs.neu.edu', 80))
+
+    return sock
+
+
+def connection_closed(response):
+    lines = response.split('\r\n')
+
+    if 'Connection: close' in lines:
+        return True
+
+    return False
+
+
+def crawl(parsed, sock, session):
+    flags = []
+    visited = set()
+    links = []
+
+
+    while (len(flags) < 5):
+
+        try:
+            request = 'GET ' + str(parsed) + ' HTTP/1.1\r\nHost: fring.ccs.neu.edu\r\nConnection:keep-alive\r\nCookie: sessionid=' + str(session)
+            request += CRLF
+
+            sock.sendall(request)
+            time.sleep(.01)
+            response = sock.recv(65000)
+
+
+	    print response
+            if connection_closed(response):
+                sock = reset_connection()
+
+            code = get_response_code(response)
+
+            if code == 'OK':
+                links.extend(collect_links(response))
+                crawl_links = list(set(links) - set(visited))
+                if (len(crawl_links) == 0):
+                    break
+                parsed = crawl_links[0]
+                visited.add(parsed)
+
+                if 'secret_flag' in response:
+                    flags.append(check_flags(get_html(response)))
+
+            elif code == 'Moved' or code == 'Found':
+                parsed = get_location(response)
+
+            # elif code == 'Server Error':
+            #     continue
+
+        except:
+            raise
+
+    return flags
+
+# Main method
+if __name__ == '__main__':
+    args = sys.argv
+    username = str(args[1])
+    password = str(args[2])
+    response = ''
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.connect(('fring.ccs.neu.edu', 80))
+        login_page, cookies = get_login_page(sock)
+
+        csrf, session = parse_cookies(cookies, True)
+
+        login_response = post_login(csrf, session, username, password)
+
+        parsed_link = []
+        if get_response_code(login_response) == 'Found':
+            next_link = get_location(login_response)
+            next_link = next_link[10:]
+            parsed_link = urlparse(next_link)
+
+        session = parse_cookies(get_cookies(login_response), False)
+        flags = crawl(parsed_link[2], sock, session)
+
+        for f in flags:
+            print f
+        
+
+        sock.close()
+    except:
+        raise
+
+

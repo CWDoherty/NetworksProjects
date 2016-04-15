@@ -1,0 +1,235 @@
+#!/usr/bin/python -u
+# The -u makes output unbuffered, so it will show up immediately
+import sys
+import socket
+import select
+import json
+from pprint import pprint
+import time
+
+# pads the name with null bytes at the end
+def pad(name):
+        result = '\0' + name
+        while len(result) < 108:
+                result += '\0'
+        return result
+
+def updateBPDU(root, cost):
+    return json.dumps({"source":str(id), "dest":"ffff", "type": "bpdu",
+                            "message":{"id":"abcd", "root":root, "cost":cost}})
+
+if __name__ == "__main__":
+        id = sys.argv[1]
+        LAN = sys.argv[2:]
+        sockets = []
+        unique_LAN = set()
+
+        for l in LAN:
+            unique_LAN.add(l)
+
+        # hostnames : sockets
+        forwarding_table = {}
+
+        # disabled ports
+        disabled_ports = set()
+
+        # bridgename : time
+        bridge_times = {}
+
+        # root port
+        rootPort = None
+
+        # ID of bridge we use to go to root
+        pathID = None
+
+        # Keep track of the last time we sent a bpdu
+        lastSent = 0
+
+        #bpdu
+        root = str(id)
+        cost = 0
+        bpdu = json.dumps({'source':str(id), 'dest':'ffff', 'type': 'bpdu',
+                            'message':{'id':'abcd', 'root':root, 'cost':cost}})
+
+        # socket : time
+        bpdu_times = {}
+
+        index = 0
+        last_bpdu_sent = None
+
+         # creates sockets and connects to them
+        for x in unique_LAN:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                s.connect(pad(x))
+                sockets.append(s)
+                bpdu_times[s] = 0
+
+        print "Bridge " + id + " starting up\n"
+
+
+
+        for x in sockets:
+            x.send(bpdu)
+            print "Sending BPDU on port: " + str(x.fileno())
+        lastSent = int(round(time.time() * 1000))
+
+
+        # Main loop
+        while True:
+
+                 # Sends bpdu to each of the ready sockets every 500 ms
+                if (int(round(time.time() * 1000)) - lastSent) > 500:
+                        bpdu = updateBPDU(root, cost)
+                        for x in sockets:
+                            x.send(bpdu)
+                            print "Sending BPDU on port: " + str(x.fileno())
+                        lastSent = int(round(time.time() * 1000))
+
+                 # Calls select with all the sockets; change the timeout value (1)
+                ready, ignore, ignore2 = select.select(sockets, [], [], 0.1)
+
+                 # Reads from each fo the ready sockets
+                for x in ready:
+
+                    data = x.recv(1500)
+                    json_data = json.loads(data)
+
+
+                    # For receiving bpdu packets
+                    if str(json_data['type']) == 'bpdu':
+                        # our own bpdu means it's a loop
+                        if json_data['source'] == str(id):
+                            continue
+
+
+                        other_root = str(json_data['message']['root'])
+                        other_cost = int(json_data['message']['cost'])
+                        other_id = str(json_data['source'])
+                        bridge_times[json_data['source']] = int(round(time.time() * 1000))
+
+                        # other root is better than ours
+                        # inherit root, other cost + 1, new root port (this one) and new path ID
+                        if other_root < root:
+                            print "Reset"
+                            root = other_root
+                            print "New root: " + str(id) + "/" + str(root)
+                            cost = other_cost + 1
+                            pathID = other_id
+                            rootPort = x
+                            print "Root port: " + str(id) + "/" + str(x.fileno())
+                            disabled_ports = set()
+                            forwarding_table = {}
+
+                        # other root is worse than ours
+                        # designate port, they'll use us to get to the root
+                        elif other_root > root:
+                            print "Designated port: " + str(id) + "/" + str(x.fileno())
+                            if x in disabled_ports:
+                                print "Removed " + str(x.fileno()) + " due to root change"
+                                disabled_ports.remove(x)
+
+
+                        else:
+                            diff = cost - other_cost
+                            if x == rootPort:
+                                continue
+
+                            elif diff == 0:
+                                if other_id > str(id):
+                                    if x not in disabled_ports:
+                                        disabled_ports.add(x)
+                                        print "Disabled port: " + str(id) + "/" + str(x.fileno()) + " due to " + str(json_data)
+                                # else:
+                                #     if x in disabled_ports:
+                                #         disabled_ports.remove(x)
+                                #         print "Designated port: " + str(id) + "/" + str(x.fileno())
+                            #
+                            # elif diff > 0:
+                            #     if x == rootPort:
+                            #         continue
+                            #     else:
+                            #         cost = other_cost + 1
+                            #         rootPort =
+                            elif diff == 1:
+                                if x == rootPort:
+                                    continue
+                                if other_id < pathID:
+                                    pathID = other_id
+                                    disabled_ports.add(rootPort)
+                                    print "Disabled port: " + str(id) + "/" + str(rootPort.fileno()) + " due to " + str(json_data)
+                                    rootPort = x
+                                    print "Root port: " + str(id) + "/" + str(x.fileno())
+                                    # if x in disabled_ports:
+                                    #     disabled_ports.remove(x)
+                                else:
+                                    if x not in disabled_ports:
+                                        disabled_ports.add(x)
+                                        print "Disabled port: " + str(id) +  "/" + str(x.fileno()) + " due to " + str(json_data)
+                            elif diff > 1:
+                                cost = other_cost + 1
+                                disabled_ports.add(rootPort)
+                                print "Disabled port: " + str(id) + "/" + str(rootPort.fileno())
+                                print "Root port: " + str(id) + "/" + str(x.fileno())
+                                rootPort = x
+                                pathID = other_id
+                                # if x in disabled_ports:
+                                #     disabled_ports.remove(x)
+
+                            elif diff < 0:
+                                if x in disabled_ports:
+                                    # disabled_ports.remove(x)
+                                    print "Designated port: " + str(id) + "/" + str(x.fileno())
+
+
+                    elif str(json_data['type']) == 'data' and x not in disabled_ports:
+
+                        message = "Received message " + str(json_data['message']['id'])
+                        message += " on port " + str(x.fileno())
+                        message += " from " + json_data['source']
+                        message += " to " + json_data['dest']
+                        print(message)
+
+
+                        forwarding_table[json_data['source']] = x
+
+
+                        if str(json_data['dest']) in forwarding_table.keys():
+                            # We know where this host is, so forward packet there
+                            # provided it didn't come from the same port
+                            s = forwarding_table[str(json_data['dest'])]
+                            if s != x and s not in disabled_ports:
+                                s.send(data)
+                                forwarding = "Forwarding message " + str(json_data['message']['id'])
+                                forwarding += " to port " + str(s.fileno())
+                                print forwarding
+                            else:
+                                # Don't forward if it came from the same port as the destination
+                                notForwarding = "Not forwarding message " + str(json_data['message']['id'])
+                                print notForwarding
+
+                        else:
+                            # We don't know where the destination is, send it everywhere but
+                            # the port it came from
+                            #bcast, ignore, ignore2 = select.select(sockets, [], [], 0.1)
+                            for s in sockets:
+                                if s != x and s not in disabled_ports:
+                                    s.send(data)
+                                    broadcasting = "Broadcasting message " + str(json_data['message']['id'])
+                                    broadcasting += " to port " + str(s.fileno())
+                                    print broadcasting
+
+                for bridge in bridge_times.keys():
+                    if (int(round(time.time() * 1000)) - bridge_times[bridge]) > 750:
+                        bridge_times = {}
+                        forwarding_table = {}
+                        disabled_ports = set()
+                        root = id
+                        print "New root: " + str(id) + "/" + str(root)
+                        cost = 0
+                        bpdu = json.dumps({'source':str(id), 'dest':'ffff', 'type': 'bpdu',
+                            'message':{'id':'abcd', 'root':root, 'cost':cost}})
+                        for x in ready:
+                            x.send(bpdu)
+                        lastSent = int(round(time.time() * 1000))
+                        print "Reset"
+                        break

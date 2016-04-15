@@ -1,0 +1,134 @@
+#!/usr/bin/python -u
+#
+# CS3700, Spring 2015
+# Project 2 Starter Code
+#
+
+import sys
+import socket
+import time
+import datetime
+import select
+import json
+
+MSG_SIZE = 1500
+DATA_SIZE = 12000
+TIMEOUT = 30
+SEQUENCE = 0
+sentEOF = False
+
+# Bind to localhost and an ephemeral port
+IP_PORT = sys.argv[1]
+UDP_IP = IP_PORT[0:IP_PORT.find(":")]
+UDP_PORT = int(IP_PORT[IP_PORT.find(":") + 1:])
+dest = (UDP_IP, UDP_PORT)
+
+# Set up the socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.settimeout(TIMEOUT)
+
+
+def log(string):
+    sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
+
+
+def send_next_packet():
+    global SEQUENCE
+    global DATA_SIZE
+    global sentEOF
+
+    data = fullData[SEQUENCE:(SEQUENCE + DATA_SIZE)]
+
+    if (len(data) == DATA_SIZE):
+        msg = json.dumps({"sequence": SEQUENCE, "data": data, "eof": False})
+
+        if sock.sendto(msg, dest) < len(msg):
+            log("[error] unable to fully send packet")
+        else:
+            log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
+            SEQUENCE += len(data)
+        return True
+
+    elif (len(data) < DATA_SIZE) and not sentEOF:
+        msg = json.dumps({"sequence": SEQUENCE, "data": data, "eof": False})
+
+        if sock.sendto(msg, dest) < len(msg):
+            log("[error] unable to fully send packet")
+        else:
+            log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
+            SEQUENCE += len(data)
+
+        return False
+
+fullData = sys.stdin.read()
+# Send first packet
+send_next_packet()
+
+
+# Now read in data, send packets
+while True:
+
+    if not sentEOF:
+        # Try to send next packet; break if no more data
+        if (not send_next_packet()):
+            ready = select.select([sock], [], [], 0.1)
+            if ready[0]:
+                result = sock.recv(MSG_SIZE)
+
+                try:
+                    decoded = json.loads(result)
+
+                    if decoded['nack'] != '':
+                        log("[recv nack] " + str(decoded['nack']))
+                        SEQUENCE = int(decoded['nack'])
+                    elif str(decoded['nack']) == '':
+                        msg = json.dumps({'teardown': True})
+                        if sock.sendto(msg, dest) < len(msg):
+                            log("[error] unable to fully send packet")
+                        else:
+                            log("[teardown confirmed]")
+                            break
+
+                except (ValueError, KeyError, TypeError):
+                    log("[recv corrupt packet ******]")
+
+
+            msg = json.dumps({"sequence": SEQUENCE, "data": '', "eof": True})
+            if sock.sendto(msg, dest) < len(msg):
+                log("[error] unable to fully send packet")
+            else:
+                log("[send data] " + str(SEQUENCE) + " eof")
+                sentEOF = True
+
+    else:
+        # only check if something was actually received
+        # waiting to receive nacks will timeout if everything is working
+        ready = select.select([sock], [], [], 5)
+        if ready[0]:
+            log("[send] received packet")
+            result = sock.recv(MSG_SIZE)
+
+            try:
+                decoded = json.loads(result)
+                log(str(decoded))
+                if "nack" in str(decoded):
+                    log("[recv nack] " + str(decoded['nack']))
+                    SEQUENCE = int(decoded['nack'])
+                    sentEOF = False
+                elif "teardown" in str(decoded):
+                    msg = json.dumps({'teardown': True})
+                    if sock.sendto(msg, dest) < len(msg):
+                        log("[error] unable to fully send packet")
+                    else:
+                        log("[teardown confirmed]")
+                        sys.exit(0)
+
+            except (ValueError, KeyError, TypeError):
+                log("[recv corrupt packet]")
+
+        else:
+            break
+
+
+sys.exit(0)
+
