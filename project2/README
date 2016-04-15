@@ -1,4 +1,5 @@
 README
-Chris Doherty & MAtt Garvin
 
-In our approach we first started by detecting any loops that occur when a bridge is connectected to a LAN multiple times. From there we went case by case and built the spanning tree based on the Spanning Tree Protocol discussed in class. Messages recieved are processed and dealt with according to whether theyb are data or BPDUs. When a BPDU is received we process it and compare with out current BPDU to build the spanning tree. Data is forwarded or broadcasted based on the entries in the forwarding table.
+A simulation for a bridge network. 
+
+The ./run script will spin up multiple instances of the bridge implementation and these instances will work together to transfer data between LAN's by implementing the spanning tree protocol.
